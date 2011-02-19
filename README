@@ -10,4 +10,5 @@ Dependencies:
   http://starpy.sourceforge.net/
 * pyactiveresource, tested with SVN r77
   http://code.google.com/p/pyactiveresource/
-
+* redmine, tested with version 1.1.1
+  http://redmine.org/
