@@ -6,6 +6,7 @@ from starpy import manager, fastagi
 from pyactiveresource.activeresource import ActiveResource
 import logging, time
 
+# FIXME: Move templates to settings file
 ISSUE_CREATE_TMPL= {
     'subject': "Call from %(callerid)s",
     'project_id': 1,
@@ -32,9 +33,18 @@ ISSUE_HANGUP_CALL_NOT_ANSWERED_TMPL = {
     'notes': 'Hangup. Call not answered'
 }
 
+#FIXME: Move settings into config file
 REDMINE_SITE = 'http://rails-lucid.vir/'
 REDMINE_USER = 'admin'
 REDMINE_PASSWORD = 'admin'
+
+AMI_HOST = 'handz-pbx.vir'
+AMI_PORT = 5038
+AMI_USER = 'manager'
+AMI_PASSWORD = '1234'
+
+FASTAGI_LISTEN_HOST = '0.0.0.0'
+FASTAGI_LISTEN_PORT = 4576
 
 class Issue(ActiveResource):
     _site = REDMINE_SITE
@@ -233,11 +243,11 @@ if __name__ == "__main__":
     #manager.log.setLevel(logging.DEBUG)
     #fastagi.log.setLevel(logging.DEBUG)
 
-    theManager = manager.AMIFactory("manager", "1234")
-    m = theManager.login("handz-pbx.vir", 5038, 10)
+    theManager = manager.AMIFactory(AMI_USER, AMI_PASSWORD)
+    m = theManager.login(AMI_HOST, AMI_PORT, 10)
     m.addCallback(APPLICATION.amiConnectionMade)
 
     f = fastagi.FastAGIFactory(APPLICATION.agiRequestReceived)
-    reactor.listenTCP(4576, f, 50, "0.0.0.0") 
+    reactor.listenTCP(FASTAGI_LISTEN_PORT, f, 50, FASTAGI_LISTEN_HOST) 
     reactor.run()
 
