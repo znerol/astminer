@@ -248,6 +248,6 @@ if __name__ == "__main__":
     m.addCallback(APPLICATION.amiConnectionMade)
 
     f = fastagi.FastAGIFactory(APPLICATION.agiRequestReceived)
-    reactor.listenTCP(FASTAGI_LISTEN_PORT, f, 50, FASTAGI_LISTEN_HOST) 
+    reactor.listenTCP(FASTAGI_LISTEN_PORT, f, 50, FASTAGI_LISTEN_HOST)
     reactor.run()
 
