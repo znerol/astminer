@@ -1,0 +1,13 @@
+astminer - Asterisk integration for the Redmine issue tracker.
+
+Dependencies:
+=============
+* python, tested with version 2.6
+  http://python.org/
+* python-twisted, tested with version 10.1.0
+  http://twistedmatrix.com/
+* StarPy, tested with version 1.0.0a13
+  http://starpy.sourceforge.net/
+* pyactiveresource, tested with SVN r77
+  http://code.google.com/p/pyactiveresource/
+
