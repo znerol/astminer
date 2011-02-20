@@ -1,0 +1,2 @@
+include astminer.py astminer.conf
+include README LICENSE
