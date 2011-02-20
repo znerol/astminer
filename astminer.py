@@ -4,63 +4,24 @@ from twisted.internet.defer import DeferredQueue
 from twisted.internet.threads import deferToThread
 from starpy import manager, fastagi
 from pyactiveresource.activeresource import ActiveResource
-import logging, time
-
-# FIXME: Move templates to settings file
-ISSUE_CREATE_TMPL= {
-    'subject': "Call from %(callerid)s",
-    'project_id': 1,
-    'tracker_id': 1,
-    'status_id': 1,
-    'priority_id': 4,
-}
-
-ISSUE_ASSIGN_TMPL= {
-    'assigned_to_id': '%(assigned_to_id)d',
-    'status_id': 2,
-    'notes': 'Queue member %(queueMember)s answered'
-}
-
-ISSUE_ASSIGN_USER_NOT_FOUND_TMPL = {
-    'notes': 'Redmine user for queue member %(queueMember)s not found'
-}
-
-ISSUE_HANGUP_CALL_ANSWERED_TMPL = {
-    'notes': 'Hangup. Talked for %(talkDuration)f seconds'
-}
-
-ISSUE_HANGUP_CALL_NOT_ANSWERED_TMPL = {
-    'notes': 'Hangup. Call not answered'
-}
-
-#FIXME: Move settings into config file
-REDMINE_SITE = 'http://rails-lucid.vir/'
-REDMINE_USER = 'admin'
-REDMINE_PASSWORD = 'admin'
-
-AMI_HOST = 'handz-pbx.vir'
-AMI_PORT = 5038
-AMI_USER = 'manager'
-AMI_PASSWORD = '1234'
-
-FASTAGI_LISTEN_HOST = '0.0.0.0'
-FASTAGI_LISTEN_PORT = 4576
+from ConfigParser import RawConfigParser
+import logging
+import sys
+import time
 
 class Issue(ActiveResource):
-    _site = REDMINE_SITE
-    _user = REDMINE_USER
-    _password = REDMINE_PASSWORD
+    pass
 
 class User(ActiveResource):
-    _site = REDMINE_SITE
-    _user = REDMINE_USER
-    _password = REDMINE_PASSWORD
+    pass
 
 class CallTracker(object):
 
-    def __init__(self, uniqueid, callerid):
+    def __init__(self, uniqueid, callerid, templates):
         self.callerid = callerid
         self.uniqueid = uniqueid
+        self.templates = templates
+
         self.startTime = None
         self.stopTime = None
         self.callDuration = None
@@ -106,14 +67,26 @@ class CallTracker(object):
         # update ticket status here
         self._ar_queue_submit(self._blockingUpdateHangupIssue)
 
-    def _mergeIssueWithTemplate(self, template):
-        for (k,v) in template.iteritems():
-            try:
-                v = v % self._issue_placeholders
-            except TypeError:
-                pass
+    def _mergeIssueWithTemplate(self, tmpl_name):
+        changed = False
+        if self.templates.has_section(tmpl_name):
+            for (k,v) in self.templates.items(tmpl_name):
+                setattr(self.issue, k, v % self._issue_placeholders)
+                changed = True
 
-            setattr(self.issue, k, v)
+        tmpl_custom_fields_name = tmpl_name + "/custom_fields"
+        if self.templates.has_section(tmpl_custom_fields_name):
+            custom_fields = []
+            for (k, v) in self.templates.items(tmpl_custom_fields_name):
+                custom_fields.append({
+                    'id': k,
+                    'value': v % self._issue_placeholders
+                    })
+            if len(custom_fields):
+                self.issue.custom_fields = custom_fields
+                changed = True
+
+        return changed
 
     def _blockingCreateIssue(self):
         log.debug('Enter _blockingCreateIssue')
@@ -121,8 +94,8 @@ class CallTracker(object):
         self._issue_placeholders['uniqueid'] = self.uniqueid
         self._issue_placeholders['startTime'] = self.startTime
 
-        self.issue = Issue({})
-        self._mergeIssueWithTemplate(ISSUE_CREATE_TMPL)
+        self.issue = Issue()
+        self._mergeIssueWithTemplate("IssueCreate")
 
         self.issue.save()
         log.debug('Exit _blockingCreateIssue')
@@ -153,13 +126,15 @@ class CallTracker(object):
                 found = True
                 break
 
+        changed = False
         if found:
-            self._mergeIssueWithTemplate(ISSUE_ASSIGN_TMPL)
+            changed = self._mergeIssueWithTemplate("IssueAssign")
         else:
             log.warning('Redmine user for queue member %s not found' % self.queueMember)
-            self._mergeIssueWithTemplate(ISSUE_ASSIGN_USER_NOT_FOUND_TMPL)
+            changed = self._mergeIssueWithTemplate("IssueUserNotFound")
 
-        self.issue.save()
+        if changed:
+            self.issue.save()
         log.debug('Exit _blockingAssignIssue')
 
     def _blockingUpdateHangupIssue(self):
@@ -168,12 +143,14 @@ class CallTracker(object):
         self._issue_placeholders['stopTime'] = self.stopTime
         self._issue_placeholders['callDuration'] = self.callDuration
         self._issue_placeholders['talkDuration'] = self.talkDuration
+        changed = False
         if self.callAnswered:
-            self._mergeIssueWithTemplate(ISSUE_HANGUP_CALL_ANSWERED_TMPL)
+            changed = self._mergeIssueWithTemplate("IssueHangupAnswered")
         else:
-            self._mergeIssueWithTemplate(ISSUE_HANGUP_CALL_NOT_ANSWERED_TMPL)
+            changed = self._mergeIssueWithTemplate("IssueHangupNotAnswered")
 
-        self.issue.save()
+        if changed:
+            self.issue.save()
         log.debug('Exit _blockingUpdateHangupIssue')
 
     def _ar_queue_submit(self, f, *args, **kwds):
@@ -197,13 +174,14 @@ class CallTracker(object):
 class Application(object):
     """Application for the call duration callback mechanism"""
 
-    def __init__(self):
+    def __init__(self, config):
         self.trackers = {}
+        self.config = config
 
     def agiRequestReceived(self, agi):
         uniqueid = agi.variables['agi_uniqueid']
         callerid = agi.variables['agi_callerid']
-        callTracker = CallTracker(uniqueid, callerid)
+        callTracker = CallTracker(uniqueid, callerid, config)
         callTracker.start()
         self.trackers[uniqueid] = callTracker
 
@@ -233,21 +211,48 @@ class Application(object):
 
         return ami
 
-APPLICATION = Application()
 log = logging.getLogger('A2R')
 
 if __name__ == "__main__":
+
     logging.basicConfig()
 
     log.setLevel(logging.DEBUG)
     #manager.log.setLevel(logging.DEBUG)
     #fastagi.log.setLevel(logging.DEBUG)
 
-    theManager = manager.AMIFactory(AMI_USER, AMI_PASSWORD)
-    m = theManager.login(AMI_HOST, AMI_PORT, 10)
-    m.addCallback(APPLICATION.amiConnectionMade)
+    # Read configuration from /etc if available
+    config = RawConfigParser()
+    config.read('/etc/astminer.conf')
 
-    f = fastagi.FastAGIFactory(APPLICATION.agiRequestReceived)
-    reactor.listenTCP(FASTAGI_LISTEN_PORT, f, 50, FASTAGI_LISTEN_HOST)
+    # Read configuration files given on command line
+    for f in sys.argv[1:]:
+        config.readfp(open(f), f)
+
+    # Set Redmine REST API connection parameters
+    User.set_site(config.get('Astminer', 'RedmineSite'))
+    User.set_user(config.get('Astminer', 'RedmineUser'))
+    User.set_password(config.get('Astminer', 'RedminePassword'))
+    Issue.set_site(config.get('Astminer', 'RedmineSite'))
+    Issue.set_user(config.get('Astminer', 'RedmineUser'))
+    Issue.set_password(config.get('Astminer', 'RedminePassword'))
+
+    app = Application(config)
+
+    # Connect to asterisk manager interface
+    theManager = manager.AMIFactory(
+            config.get('Astminer', 'ManagerUser'),
+            config.get('Astminer', 'ManagerPassword'))
+    m = theManager.login(
+            config.get('Astminer', 'ManagerHost'),
+            int(config.get('Astminer', 'ManagerPort')), 10)
+    m.addCallback(app.amiConnectionMade)
+
+    # Setup FastAGI listener
+    f = fastagi.FastAGIFactory(app.agiRequestReceived)
+    reactor.listenTCP(
+            int(config.get('Astminer', 'AgiPort')),
+            f, 50,
+            config.get('Astminer', 'AgiHost'))
     reactor.run()
 
