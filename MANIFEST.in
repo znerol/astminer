@@ -1,2 +1,2 @@
-include astminer.py astminer.conf
+include astminer.conf
 include README LICENSE

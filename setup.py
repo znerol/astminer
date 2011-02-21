@@ -8,10 +8,15 @@ setup(name='astminer',
     author='Lorenz Schori',
     author_email='lo@znerol.ch',
     url='http://github.com/znerol/astminer',
-    scripts=['astminer.py'],
     data_files=[
         ('share/doc/astminer/examples', ['astminer.conf']),
         ('share/doc/astminer', ['README', 'LICENSE']),
     ],
+    packages=[
+        'astminer',
+        'twisted.plugins',
+    ],
+    package_data={
+        'twisted': ['plugins/astminer_plugin.py']
+    },
 )
-

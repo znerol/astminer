@@ -1,12 +1,8 @@
 #!/usr/bin/env python
-from twisted.internet import reactor
-from twisted.internet.defer import DeferredQueue
-from twisted.internet.threads import deferToThread
-from starpy import manager, fastagi
 from pyactiveresource.activeresource import ActiveResource
-from ConfigParser import RawConfigParser
-import logging
-import sys
+from twisted.internet.defer import Deferred, DeferredQueue
+from twisted.internet.threads import deferToThread
+from twisted.python import log
 import time
 
 class Issue(ActiveResource):
@@ -38,34 +34,36 @@ class CallTracker(object):
 
     def start(self):
         self.startTime = time.time()
-        log.info("%s: start" % self)
 
-        # open ticket here
-        self._ar_queue_submit(self._blockingCreateIssue)
+        # create ticket
+        f = self._blockingCreateIssue
+        log.msg("Submit: %s" % f)
+        self._ar_queue_submit(f).addCallback(self._logBlockingCompleted, f)
 
-    def setQueueMember(self, member):
+    def answer(self, member):
         self.talkStart = time.time()
         self.callAnswered = True
         self.queueMember = member
 
-        log.info("%s: member %s answered" % (self, member))
-
         # map and assign ticket to member
-        self._ar_queue_submit(self._blockingAssignIssue)
+        f = self._blockingAssignIssue
+        log.msg("Submit: %s" % f)
+        self._ar_queue_submit(f).addCallback(self._logBlockingCompleted, f)
 
     def hangup(self):
         self.endTime = time.time()
         self.callDuration = self.endTime - self.startTime
 
-        log.info("%s: stop, total duration: %f" % (self, self.callDuration))
         if (self.callAnswered):
             self.talkDuration = self.endTime - self.talkStart
-            log.info("%s: stop, talk duration: %f" % (self, self.talkDuration))
-        else:
-            log.info("%s: nobody answered this call", self)
 
         # update ticket status here
-        self._ar_queue_submit(self._blockingUpdateHangupIssue)
+        f = self._blockingUpdateHangupIssue
+        log.msg("Submit: %s" % f)
+        self._ar_queue_submit(f).addCallback(self._logBlockingCompleted, f)
+
+    def _logBlockingCompleted(self, result, f):
+        log.msg("Completed: %s" % f)
 
     def _mergeIssueWithTemplate(self, tmpl_name):
         changed = False
@@ -89,7 +87,6 @@ class CallTracker(object):
         return changed
 
     def _blockingCreateIssue(self):
-        log.debug('Enter _blockingCreateIssue')
         self._issue_placeholders['callerid'] = self.callerid
         self._issue_placeholders['uniqueid'] = self.uniqueid
         self._issue_placeholders['startTime'] = self.startTime
@@ -98,11 +95,8 @@ class CallTracker(object):
         self._mergeIssueWithTemplate("IssueCreate")
 
         self.issue.save()
-        log.debug('Exit _blockingCreateIssue')
 
     def _blockingAssignIssue(self):
-        log.debug('Enter _blockingAssignIssue')
-
         # Support Queue Members in the form "sip/username01":
         # * Strip protocol prefix -> username01
         # * Derive a form without trailing digits -> username
@@ -121,7 +115,6 @@ class CallTracker(object):
         users = User.find()
         for user in users:
             if user.login in (username, username_nodigits):
-                log.debug('Found user %d' % int(user.id))
                 self._issue_placeholders['assigned_to_id'] = int(user.id)
                 found = True
                 break
@@ -130,16 +123,12 @@ class CallTracker(object):
         if found:
             changed = self._mergeIssueWithTemplate("IssueAssign")
         else:
-            log.warning('Redmine user for queue member %s not found' % self.queueMember)
             changed = self._mergeIssueWithTemplate("IssueUserNotFound")
 
         if changed:
             self.issue.save()
-        log.debug('Exit _blockingAssignIssue')
 
     def _blockingUpdateHangupIssue(self):
-        log.debug('Enter _blockingUpdateHangupIssue')
-
         self._issue_placeholders['stopTime'] = self.stopTime
         self._issue_placeholders['callDuration'] = self.callDuration
         self._issue_placeholders['talkDuration'] = self.talkDuration
@@ -151,22 +140,23 @@ class CallTracker(object):
 
         if changed:
             self.issue.save()
-        log.debug('Exit _blockingUpdateHangupIssue')
 
     def _ar_queue_submit(self, f, *args, **kwds):
-        log.debug("_ar_queue_submit: %s", f)
-        invocation = (f, args, kwds)
+        d = Deferred()
+        invocation = (f, args, kwds, d)
         self._ar_queue.put(invocation)
 
-    def _ar_queue_poll(self, *ignored):
-        log.debug("_ar_queue_poll -> deferred")
+        return d
+
+    def _ar_queue_poll(self, result=None):
         d = self._ar_queue.get()
-        d.addCallback(self._ar_queue_invoke)
+        d.addCallbacks(self._ar_queue_invoke, log.err)
 
     def _ar_queue_invoke(self, invocation):
-        log.debug("_ar_queue_invoke -> deferred")
-        d = deferToThread(invocation[0], *invocation[1], **invocation[2])
-        d.addCallback(self._ar_queue_poll)
+        f, args, kwds, d2 = invocation
+        d = deferToThread(f, *args, **kwds)
+        d.addCallbacks(self._ar_queue_poll, log.err)
+        d.chainDeferred(d2)
 
     def __repr__(self):
         return "CallTracker(\"%s\", \"%s\")" % (self.uniqueid, self.callerid)
@@ -181,7 +171,7 @@ class Application(object):
     def agiRequestReceived(self, agi):
         uniqueid = agi.variables['agi_uniqueid']
         callerid = agi.variables['agi_callerid']
-        callTracker = CallTracker(uniqueid, callerid, config)
+        callTracker = CallTracker(uniqueid, callerid, self.config)
         callTracker.start()
         self.trackers[uniqueid] = callTracker
 
@@ -201,33 +191,24 @@ class Application(object):
             uniqueid = event['uniqueid']
             try:
                 callTracker = self.trackers[uniqueid]
-                callTracker.setQueueMember(event['member'])
+                callTracker.answer(event['member'])
             except KeyError:
                 pass
 
-        log.info("AMI connected")
         ami.registerEvent('Hangup', amiChannelHangup)
         ami.registerEvent('AgentConnect', amiAgentConnected)
 
         return ami
 
-log = logging.getLogger('A2R')
+def makeService(twisted_config):
+    from ConfigParser import RawConfigParser
+    from starpy import manager, fastagi
+    from twisted.application import internet
 
-if __name__ == "__main__":
-
-    logging.basicConfig()
-
-    log.setLevel(logging.DEBUG)
-    #manager.log.setLevel(logging.DEBUG)
-    #fastagi.log.setLevel(logging.DEBUG)
-
-    # Read configuration from /etc if available
+    # Read configuration
+    f = twisted_config['config']
     config = RawConfigParser()
-    config.read('/etc/astminer.conf')
-
-    # Read configuration files given on command line
-    for f in sys.argv[1:]:
-        config.readfp(open(f), f)
+    config.readfp(open(f), f)
 
     # Set Redmine REST API connection parameters
     User.set_site(config.get('Astminer', 'RedmineSite'))
@@ -250,9 +231,7 @@ if __name__ == "__main__":
 
     # Setup FastAGI listener
     f = fastagi.FastAGIFactory(app.agiRequestReceived)
-    reactor.listenTCP(
-            int(config.get('Astminer', 'AgiPort')),
-            f, 50,
-            config.get('Astminer', 'AgiHost'))
-    reactor.run()
+    service = internet.TCPServer(
+            int(config.get('Astminer', 'AgiPort')), f)
 
+    return service
