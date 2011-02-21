@@ -200,9 +200,35 @@ class Application(object):
 
         return ami
 
+# copy&paste from starpy/manager.py, converted to ReconnectingClientFactory
+from twisted.internet import protocol, reactor
+from starpy import manager
+class MyAMIFactory(protocol.ReconnectingClientFactory):
+    """A reconnecting factory for AMI protocols"""
+    protocol = manager.AMIProtocol
+    maxDelay = 300 # 5 minutes
+
+    def __init__(self, username, secret, app):
+        self.username = username
+        self.secret = secret
+
+        # Another hack to get application up and running after ami login.
+        # Normally we'd implement that in the subclass of AMIProtocol...
+        self.app = app
+
+    def startedConnecting(self, connector):
+        """XXX: Work around messy implementation in starpy"""
+        self.loginDefer = Deferred()
+        self.loginDefer.addCallback(self.loginComplete)
+
+    def loginComplete(self, ami):
+        """Reset retry delay after a successfull login"""
+        self.resetDelay()
+        self.app.amiConnectionMade(ami)
+
 def makeService(twisted_config):
     from ConfigParser import RawConfigParser
-    from starpy import manager, fastagi
+    from starpy import fastagi
     from twisted.application import internet
 
     # Read configuration
@@ -221,13 +247,14 @@ def makeService(twisted_config):
     app = Application(config)
 
     # Connect to asterisk manager interface
-    theManager = manager.AMIFactory(
+    f = MyAMIFactory(
             config.get('Astminer', 'ManagerUser'),
-            config.get('Astminer', 'ManagerPassword'))
-    m = theManager.login(
+            config.get('Astminer', 'ManagerPassword'),
+            app)
+    reactor.connectTCP(
             config.get('Astminer', 'ManagerHost'),
-            int(config.get('Astminer', 'ManagerPort')), 10)
-    m.addCallback(app.amiConnectionMade)
+            int(config.get('Astminer', 'ManagerPort')),
+            f)
 
     # Setup FastAGI listener
     f = fastagi.FastAGIFactory(app.agiRequestReceived)
