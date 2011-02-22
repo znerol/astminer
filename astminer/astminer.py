@@ -8,15 +8,13 @@ import time
 class Issue(ActiveResource):
     pass
 
-class User(ActiveResource):
-    pass
-
 class CallTracker(object):
 
-    def __init__(self, uniqueid, callerid, templates):
+    def __init__(self, uniqueid, callerid, templates, usermap):
         self.callerid = callerid
         self.uniqueid = uniqueid
         self.templates = templates
+        self.usermap = usermap
 
         self.startTime = None
         self.stopTime = None
@@ -97,32 +95,15 @@ class CallTracker(object):
         self.issue.save()
 
     def _blockingAssignIssue(self):
-        # Support Queue Members in the form "sip/username01":
-        # * Strip protocol prefix -> username01
-        # * Derive a form without trailing digits -> username
-        # Like this we are able to map multiple sip accounts to one redmine
-        # account if desired.
-        username = self.queueMember.split('/', 1)[1]
-        username_nodigits = username.rstrip('0123456789')
-
         self._issue_placeholders['queueMember'] = self.queueMember
         self._issue_placeholders['callAnswered'] = self.callAnswered
 
-        # AFAIK Redmine does not support querying the users database with a
-        # condition, so we have to load all users and match them against our
-        # username condition manually.
-        found = False
-        users = User.find()
-        for user in users:
-            if user.login in (username, username_nodigits):
-                self._issue_placeholders['assigned_to_id'] = int(user.id)
-                found = True
-                break
-
         changed = False
-        if found:
+        try:
+            userid = int(self.usermap[self.queueMember])
+            self._issue_placeholders['assigned_to_id'] = userid
             changed = self._mergeIssueWithTemplate("IssueAssign")
-        else:
+        except KeyError:
             changed = self._mergeIssueWithTemplate("IssueUserNotFound")
 
         if changed:
@@ -171,7 +152,8 @@ class Application(object):
     def agiRequestReceived(self, agi):
         uniqueid = agi.variables['agi_uniqueid']
         callerid = agi.variables['agi_callerid']
-        callTracker = CallTracker(uniqueid, callerid, self.config)
+        usermap = dict(self.config.items("UserMap"))
+        callTracker = CallTracker(uniqueid, callerid, self.config, usermap)
         callTracker.start()
         self.trackers[uniqueid] = callTracker
 
@@ -237,9 +219,6 @@ def makeService(twisted_config):
     config.readfp(open(f), f)
 
     # Set Redmine REST API connection parameters
-    User.set_site(config.get('Astminer', 'RedmineSite'))
-    User.set_user(config.get('Astminer', 'RedmineUser'))
-    User.set_password(config.get('Astminer', 'RedminePassword'))
     Issue.set_site(config.get('Astminer', 'RedmineSite'))
     Issue.set_user(config.get('Astminer', 'RedmineUser'))
     Issue.set_password(config.get('Astminer', 'RedminePassword'))
